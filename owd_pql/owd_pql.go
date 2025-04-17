@@ -1,4 +1,4 @@
-package pql
+package owd_pql
 
 import (
 	"context"

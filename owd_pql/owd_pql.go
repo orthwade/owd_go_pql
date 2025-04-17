@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -14,11 +13,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
-func WaitPsql(ctx context.Context) error {
+func WaitPsql(ctx context.Context, dbHost string, dbPort string) error {
 	logger := owd_logs.DefaultFromCtx(ctx)
-
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
 
 	address := dbHost + ":" + dbPort
 
@@ -44,7 +40,7 @@ func WaitPsql(ctx context.Context) error {
 			time.Sleep(timeout)
 		} else {
 			logger.Error("Max retries. Connection Failed")
-			return fmt.Errorf("Max retries. Connection Failed")
+			return fmt.Errorf("max retries. connection Failed")
 		}
 	}
 
@@ -52,48 +48,40 @@ func WaitPsql(ctx context.Context) error {
 
 }
 
-// ConnectToDB opens a connection to the PostgreSQL database.
-func ConnectToDB(connStr string) (*sql.DB, error) {
-	db, err := sql.Open("postgres", connStr)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
-}
-
-func ConnectToDatabasePostgres(ctx context.Context) *sql.DB {
+func Connect(ctx context.Context,
+	dbHost string,
+	dbPort string,
+	dbUser string,
+	dbPassword string,
+	dbName string) *sql.DB {
 	logger := owd_logs.DefaultFromCtx(ctx)
 
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbSuperuser := os.Getenv("DB_SUPERUSER")
-	dbSuperuserPassword := os.Getenv("DB_SUPERUSER_PASSWORD")
-	dbDefaultName := os.Getenv("DB_DEFAULT_NAME")
-
 	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		dbSuperuser, dbSuperuserPassword, dbHost, dbPort, dbDefaultName)
+		dbUser,
+		dbPassword,
+		dbHost,
+		dbPort,
+		dbName)
 
-	logger.Info("Db Connection",
-		"Superuser", dbSuperuser,
-		"Superuser PW", dbSuperuserPassword,
+	logger.Info("Attempting connection to database",
+		"DB name", dbName,
+		"User", dbUser,
 		"Host", dbHost,
-		"Port", dbPort,
-		"Default name", dbDefaultName)
+		"Port", dbPort)
 
-	db, err := sql.Open(dbDefaultName, connStr)
+	db, err := sql.Open(dbName, connStr)
 
 	if err != nil {
-		logger.Error("Error connecting to default database postgres", "error", err)
+		logger.Error("Error connecting to database", "error", err)
 	} else {
-		logger.Info("Succesfully connected to default database postgres")
+		logger.Info("Succesfully connected to database")
 	}
 
 	return db
 }
 
-func CheckIfDatabaseSubscriptionsExists(ctx context.Context, postgresDb *sql.DB) bool {
+func CheckDb(ctx context.Context, postgresDb *sql.DB, dbName string) bool {
 	var result bool
-	dbName := os.Getenv("DB_NAME")
 
 	logger := owd_logs.DefaultFromCtx(ctx)
 
@@ -109,42 +97,6 @@ func CheckIfDatabaseSubscriptionsExists(ctx context.Context, postgresDb *sql.DB)
 
 	return result
 }
-
-func ConnectToDatabaseSubscriptions(ctx context.Context, postgresDb *sql.DB) *sql.DB {
-	logger := owd_logs.DefaultFromCtx(ctx)
-
-	if !CheckIfDatabaseSubscriptionsExists(ctx, postgresDb) {
-		logger.Error("Database subscriptions doesn't exists")
-	} else {
-		logger.Info("Database subscriptions found. Attempting connection")
-	}
-
-	postgresDb.Close()
-
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
-
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		dbUser, dbPassword, dbHost, dbPort, dbName)
-
-	db, err := ConnectToDB(connStr)
-	if err != nil {
-		logger.Error("Error connecting to database", "error", err)
-	}
-	logger.Info("Successfully connected to database", "db", dbName)
-
-	return db
-}
-
-// func CheckRecord(db *sql.DB, tableName string, key int) bool {
-// 	logger, ok := ctx.Value("logger").(*owd_logs.Logger)
-// 	if !ok {
-// 		logger = owd_logs.New(slog.New(slog.NewTextHandler(os.Stderr, nil)))
-// 	}
-// }
 
 func CheckTable(ctx context.Context, db *sql.DB, tableName string) (bool, error) {
 	logger := owd_logs.DefaultFromCtx(ctx)
@@ -185,15 +137,23 @@ func CreateTable(ctx context.Context, db *sql.DB, tableName string,
 
 	// Create index query if index info is provided
 	if indexName != "" && indexColumn != "" {
-		createIndexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (%s);`, indexName, tableName, indexColumn)
+		createIndexQuery := fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (%s);`,
+			indexName,
+			tableName,
+			indexColumn)
+
 		_, err = db.ExecContext(ctx, createIndexQuery)
+
 		if err != nil {
 			logger.Error(fmt.Sprintf("Failed to create index on %s", indexColumn), "error", err)
 			return err
 		}
 	}
 
-	logger.Info(fmt.Sprintf("Table '%s' and index '%s' created successfully", tableName, indexName))
+	logger.Info(fmt.Sprintf("Table '%s' and index '%s' created successfully",
+		tableName,
+		indexName))
+
 	return nil
 }
 
@@ -235,7 +195,11 @@ func PrintTableColumnsNamesAndTypes(
 	}
 }
 
-func AddRecord(ctx context.Context, db *sql.DB, tableName string, columns []string, values []interface{}, conflictColumn string) error {
+func AddRecord(ctx context.Context, db *sql.DB,
+	tableName string,
+	columns []string,
+	values []interface{},
+	conflictColumn string) error {
 	logger := owd_logs.DefaultFromCtx(ctx)
 
 	// Construct the column and value placeholders for the query
@@ -285,7 +249,10 @@ func FindRecord(ctx context.Context, db *sql.DB, tableName string,
 		return
 	}
 
-	logger.Info(fmt.Sprintf("Record from %s with %s = %v retrieved successfully", tableName, idFieldName, idValue))
+	logger.Info(fmt.Sprintf("Record from %s with %s = %v retrieved successfully",
+		tableName,
+		idFieldName,
+		idValue))
 }
 
 func RemoveRecord(ctx context.Context, db *sql.DB, tableName string, id int) error {
